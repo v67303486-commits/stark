@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Jarvis</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#060b14">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+:root{--bg:#060b14;--panel:#0b1422;--ink:#dff3fb;--mute:#7d97a8;--cy:#35e0ff;--am:#ffb347;--line:#16314a;--chip:#0f2236}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:radial-gradient(circle at 50% -10%,#0d2740,var(--bg) 60%);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;justify-content:center}
+.app{width:100%;max-width:760px;height:100%;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)}
+header{display:flex;align-items:center;gap:14px;padding:14px 18px 10px}
+.orb{width:54px;height:54px;border-radius:50%;position:relative;flex:none;border:2px solid var(--cy);box-shadow:0 0 18px var(--cy),inset 0 0 14px var(--cy)}
+.orb:before,.orb:after{content:"";position:absolute;border-radius:50%}
+.orb:before{inset:9px;border:2px dashed var(--cy);animation:spin 8s linear infinite}
+.orb:after{inset:20px;background:var(--cy);box-shadow:0 0 14px var(--cy);animation:pulse 2.4s ease-in-out infinite}
+.orb.listen{border-color:var(--am);box-shadow:0 0 22px var(--am),inset 0 0 14px var(--am)}
+.orb.listen:before{border-color:var(--am);animation-duration:2s}.orb.listen:after{background:var(--am);box-shadow:0 0 14px var(--am);animation-duration:.8s}
+.orb.talk:after{animation-duration:.5s}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{50%{transform:scale(.6);opacity:.6}}
+@media(prefers-reduced-motion:reduce){.orb:before,.orb:after{animation:none}}
+h1{margin:0;font:700 1.35rem "Bahnschrift","DIN Alternate","Segoe UI",sans-serif;letter-spacing:.14em}
+#st{font-size:.8rem;color:var(--mute)}
+.bar{display:flex;flex-wrap:wrap;gap:6px;padding:0 18px 10px}
+button{font:inherit;font-size:.82rem;cursor:pointer;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:8px;padding:5px 10px}
+button:hover{border-color:var(--cy)}button.on{background:var(--cy);color:#04121c;border-color:var(--cy)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--cy);outline-offset:2px}
+#log{flex:1;overflow-y:auto;padding:12px 18px;display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line)}
+.m{max-width:86%;padding:9px 13px;border-radius:12px;white-space:pre-wrap;word-wrap:break-word}
+.bot{align-self:flex-start;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--cy)}
+.me{align-self:flex-end;background:#12466a}
+.chips{display:flex;gap:6px;padding:8px 18px 0;overflow-x:auto}
+.chips button{white-space:nowrap;border-radius:99px}
+form{display:flex;gap:8px;padding:12px 18px;padding-bottom:max(12px,env(safe-area-inset-bottom))}
+input[type=text]{flex:1;font:inherit;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+form button.send{background:var(--cy);color:#04121c;border-color:var(--cy);font-weight:700;padding:0 18px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="orb" id="orb"></div>
+    <div><h1 id="title">JARVIS</h1><div id="st">Online. Everything is stored on this device.</div></div>
+  </header>
+  <div class="bar">
+    <button id="bInstall" class="on" title="Install on this device">Install app</button>
+    <button id="bApk" title="Download the Android app">Android app</button>
+    <button id="bDl" title="Download the app file">Download</button>
+    <button id="bAI" title="Add your free Gemini API key">AI key</button>
+    <button id="bHF" title="Always listening for the wake word">Hands-free</button>
+    <button id="bVoice" title="Speak replies aloud">Voice</button>
+    <button id="bBackup">Backup</button>
+    <button id="bRestore">Restore</button>
+    <button id="bSnap">Snapshot</button>
+    <input type="file" id="file" accept=".json,application/json" hidden>
+  </div>
+  <div id="log" aria-live="polite"></div>
+  <div class="chips" id="chips"></div>
+  <form id="f" autocomplete="off">
+    <input type="text" id="in" placeholder="Ask or command. Type help for everything" aria-label="Message">
+    <button type="button" id="bMic" hidden>Mic</button>
+    <button class="send">Send</button>
+  </form>
+</div>
+<script>
+(function(){
+var K="jarvis_v1",SNAP="jarvis_snap";
+var D={name:"",wake:"jarvis",chat:[],notes:[],todos:[],taught:[],rem:[],voice:true,ai:{on:false,provider:"local",model:"llama3.2",key:""},n:0};
+try{var s=JSON.parse(localStorage.getItem(K));if(s)Object.assign(D,s)}catch(e){}
+var $=function(i){return document.getElementById(i)},log=$("log"),inp=$("in"),orb=$("orb");
+var speaking=false,hf=false,awake=0,rec=null,armed={};
+
+function save(){try{localStorage.setItem(K,JSON.stringify(D));if(D.n%15===0)localStorage.setItem(SNAP,JSON.stringify({t:Date.now(),d:D}))}catch(e){}}
+function say(t){
+  if(!D.voice||!window.speechSynthesis)return;
+  speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(t.replace(/[•\[\]]/g,""));
+  var v=speechSynthesis.getVoices().filter(function(x){return /en/i.test(x.lang)&&/male|david|daniel|george|ryan|alex/i.test(x.name)})[0];
+  if(v)u.voice=v;u.pitch=.9;
+  u.onstart=function(){speaking=true;orb.classList.add("talk")};
+  u.onend=u.onerror=function(){speaking=false;orb.classList.remove("talk")};
+  speechSynthesis.speak(u);
+}
+function add(who,text,keep){
+  var d=document.createElement("div");d.className="m "+who;d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight;
+  if(keep!==false){D.chat.push([who,text]);if(D.chat.length>400)D.chat.shift();D.n++;save()}
+  if(who==="bot")say(text);
+}
+function norm(t){return t.toLowerCase().replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim()}
+function sim(a,b){var x=norm(a).split(" "),y=norm(b).split(" "),i=0;x.forEach(function(w){if(y.indexOf(w)>-1)i++});var u=x.length+y.length-i;return u?i/u:0}
+function pick(a){return a[Math.floor(Math.random()*a.length)]}
+function sir(){return D.name?D.name:"sir"}
+function list(a,f){return a.length?a.map(function(v,i){return (i+1)+". "+f(v)}).join("\n"):null}
+function calc(e){e=e.replace(/\^/g,"**").replace(/x/gi,"*");if(!/^[\d\s+\-*\/().%]+$/.test(e)||!/\d/.test(e))return null;try{var r=Function('"use strict";return ('+e+')')();if(typeof r==="number"&&isFinite(r))return String(Math.round(r*1e10)/1e10)}catch(x){}return null}
+function beep(){try{var c=new (window.AudioContext||window.webkitAudioContext)(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=880;g.gain.value=.2;o.start();setTimeout(function(){o.stop();c.close()},500)}catch(e){}}
+
+/* Reminders and timers */
+function arm(r){
+  if(armed[r.id])return;armed[r.id]=1;
+  setTimeout(function(){
+    if(D.rem.indexOf(r)<0&&!D.rem.some(function(x){return x.id===r.id}))return;
+    D.rem=D.rem.filter(function(x){return x.id!==r.id});save();beep();
+    add("bot",r.text==="Timer finished"?"Your timer has finished, "+sir()+".":"Reminder, "+sir()+": "+r.text);
+    try{if(window.Notification&&Notification.permission==="granted")new Notification("Jarvis",{body:r.text})}catch(e){}
+  },Math.max(r.due-Date.now(),0));
+}
+function addRem(text,due){
+  var r={id:Date.now()+Math.random(),due:due,text:text};D.rem.push(r);save();arm(r);
+  try{if(window.Notification&&Notification.permission==="default")Notification.requestPermission()}catch(e){}
+  return new Date(due).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+}
+function mult(u){return /^h/.test(u)?3600e3:/^m/.test(u)?60e3:1e3}
+
+var SITES={youtube:"https://www.youtube.com",google:"https://www.google.com",maps:"https://maps.google.com",gmail:"https://mail.google.com",whatsapp:"https://web.whatsapp.com",github:"https://github.com",wikipedia:"https://www.wikipedia.org",linkedin:"https://www.linkedin.com"};
+var jokes=["Why do programmers prefer dark mode? Because light attracts bugs.","I told my computer I needed a break. It went to sleep.","There are 10 kinds of people: those who understand binary and those who don’t.","I would tell you a UDP joke, but you might not get it."];
+var HELP="At your service. I can:\n• Talk: hello, time, date, joke, flip a coin, roll a dice, system status, battery\n• Math and units: 12*(3+4), calculate 50/4, convert 10 km to miles\n• Timers: set timer 5 minutes | remind me to call mom in 20 minutes | remind me to study at 6:30 pm | reminders\n• Open: open youtube | search electric cars | play lo-fi music\n• Memory: my name is Ravi | teach: question => answer | taught | forget teaching 1\n• Notes: note: idea | notes | delete note 1\n• To-dos: todo: task | todos | done 1\n• Wake word: wake word friday\n• Smarter brain: tap AI key and paste a free Gemini key | ai local llama3.2 | ai status | ai off\n• Data: backup, restore, clear\nTurn on Hands-free and say “"+D.wake+"” followed by a command.";
+
+function conv(m){
+  var v=parseFloat(m[1]),a=m[2].toLowerCase(),b=m[3].toLowerCase(),T={"km>mile":.621371,"mile>km":1.609344,"kg>lb":2.204623,"lb>kg":.453592,"m>ft":3.28084,"ft>m":.3048,"cm>inch":.393701,"inch>cm":2.54};
+  function u(x){x=x.replace(/s$/,"");return{miles:"mile",kilometers:"km",kilometres:"km",pounds:"lb",kilograms:"kg",meters:"m",metres:"m",feet:"ft",foot:"ft",inches:"inch",in:"inch",celsius:"c",fahrenheit:"f"}[x]||x}
+  a=u(a);b=u(b);
+  if(a==="c"&&b==="f")return v+" °C = "+Math.round((v*9/5+32)*100)/100+" °F";
+  if(a==="f"&&b==="c")return v+" °F = "+Math.round(((v-32)*5/9)*100)/100+" °C";
+  var k=T[a+">"+b];return k?v+" "+a+" = "+Math.round(v*k*1000)/1000+" "+b:null;
+}
+
+function ask(){
+  var h=D.chat.slice(-10).map(function(x){return{role:x[0]==="me"?"user":"assistant",content:x[1]}});
+  var sys="You are Jarvis, a polite, concise personal assistant. Reply in at most three sentences. The user is called "+sir()+".";
+  if(D.ai.provider==="gemini"){
+    if(!D.ai.key)return "I need a Gemini API key first. Tap the AI key button and paste it.";
+    var c=h.map(function(x){return{role:x.role==="user"?"user":"model",parts:[{text:x.content}]}});
+    while(c.length&&c[0].role!=="user")c.shift();
+    return fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(D.ai.model)+":generateContent",{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":D.ai.key},body:JSON.stringify({systemInstruction:{parts:[{text:sys}]},contents:c})})
+      .then(function(r){return r.json()}).then(function(j){
+        if(j.error){var st=j.error.code;return st===400||st===403?"Gemini rejected the key. Check that it was copied fully, or tap AI key and paste it again.":st===404?"That model name isn’t available. Try: ai model gemini-flash-latest":st===429?"The free limit is reached for now. Try again in a minute, or tomorrow.":"Gemini error: "+(j.error.message||st)}
+        var p=j.candidates&&j.candidates[0]&&j.candidates[0].content&&j.candidates[0].content.parts;
+        return p?p.map(function(x){return x.text||""}).join("").trim()||"I got an empty answer. Please ask again.":"I got no answer from Gemini. Please ask again."})
+      .catch(function(){return "I can’t reach Gemini. It needs an internet connection."});
+  }
+  h.unshift({role:"system",content:sys});
+  return fetch("http://localhost:11434/api/chat",{method:"POST",body:JSON.stringify({model:D.ai.model,messages:h,stream:false})})
+    .then(function(r){return r.json()}).then(function(j){return j.message.content.trim()})
+    .catch(function(){return "I can’t reach the local AI. Start Ollama with OLLAMA_ORIGINS=* and make sure the model “"+D.ai.model+"” is installed."});
+}
+
+function reply(raw){
+  var t=raw.trim(),l=t.replace(/^\//,"").trim(),n=norm(l),m;
+  if(!n)return "I’m listening, "+sir()+".";
+  if(n==="help"||n==="commands"||n==="what can you do")return HELP;
+  if(n==="backup"){backup();return "Backup file downloaded. Keep it somewhere safe."}
+  if(n==="restore"){$("file").click();return "Please choose your backup file."}
+  if(n==="clear"||n==="clear chat"){D.chat=[];save();log.innerHTML="";return "Chat cleared. Notes, to-dos and taught answers are kept."}
+  if(m=/^teach:?\s*(.+?)\s*(?:=>|=|->)\s*(.+)$/i.exec(l)){var q=m[1],a=m[2],ex=D.taught.filter(function(x){return norm(x[0])===norm(q)})[0];if(ex)ex[1]=a;else D.taught.push([q,a]);save();return "Learned. Ask me “"+q+"” any time."}
+  if(m=/^forget teaching (\d+)$/.exec(n)){var i=+m[1]-1;if(D.taught[i]){var g=D.taught.splice(i,1)[0];save();return "Forgot “"+g[0]+"”."}return "No taught item with that number."}
+  if(n==="taught")return list(D.taught,function(x){return x[0]+" → "+x[1]})||"Nothing taught yet. Try: teach: question => answer";
+  if(m=/^(?:my name is|call me) (.+)$/i.exec(l)){D.name=m[1].trim().slice(0,40);save();return "A pleasure, "+D.name+"."}
+  if(/^(what is my name|whats my name|who am i)$/.test(n))return D.name?"You are "+D.name+".":"I don’t know yet. Say: my name is …";
+  if(m=/^wake word (\w+)$/.exec(n)){D.wake=m[1];save();$("title").textContent=D.wake.toUpperCase();return "Wake word changed to “"+D.wake+"”."}
+  if(m=/^note:?\s+(.+)$/i.exec(l)){D.notes.push(m[1]);save();return "Noted (#"+D.notes.length+")."}
+  if(/^(notes|show notes|my notes)$/.test(n))return list(D.notes,function(x){return x})||"No notes yet. Try: note: buy milk";
+  if(m=/^delete note (\d+)$/.exec(n)){var j=+m[1]-1;if(D.notes[j]!==undefined){D.notes.splice(j,1);save();return "Note deleted."}return "No note with that number."}
+  if(m=/^todo:?\s+(.+)$/i.exec(l)){D.todos.push({t:m[1],d:false});save();return "Added to your list (#"+D.todos.length+")."}
+  if(/^(todos|todo|show todos|my todos)$/.test(n))return list(D.todos,function(x){return (x.d?"[done] ":"[ ] ")+x.t})||"Your list is empty. Try: todo: finish report";
+  if(m=/^done (\d+)$/.exec(n)){var k=+m[1]-1;if(D.todos[k]){D.todos[k].d=true;save();return "Marked as done: "+D.todos[k].t}return "No to-do with that number."}
+  if(m=/^(?:set (?:a )?)?timer (?:for )?(\d+(?:\.\d+)?) ?(sec\w*|min\w*|hour\w*|hr\w*)/.exec(n)){var at=addRem("Timer finished",Date.now()+m[1]*mult(m[2]));return "Timer set. It will go off at "+at+"."}
+  if(m=/^remind me (?:to )?(.+?) in (\d+(?:\.\d+)?) ?(sec\w*|min\w*|hour\w*|hr\w*)$/.exec(n)){return "I’ll remind you at "+addRem(m[1],Date.now()+m[2]*mult(m[3]))+"."}
+  if(m=/^remind me (?:to )?(.+?) at (\d{1,2})(?: (\d\d))? ?(am|pm)?$/.exec(n)){
+    var hh=+m[2]%24,mm=+(m[3]||0);if(m[4]==="pm"&&hh<12)hh+=12;if(m[4]==="am"&&hh===12)hh=0;
+    var d=new Date();d.setHours(hh,mm,0,0);if(d<=Date.now())d.setDate(d.getDate()+1);
+    return "I’ll remind you at "+addRem(m[1],+d)+"."}
+  if(/^(reminders|my reminders|timers)$/.test(n))return list(D.rem,function(r){return r.text+" at "+new Date(r.due).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})})||"No active reminders.";
+  if(/^(cancel|clear) (all )?(reminders|timers)$/.test(n)){D.rem=[];save();return "All reminders cancelled."}
+  if(m=/^open (\w+)$/.exec(n)){if(SITES[m[1]]){window.open(SITES[m[1]],"_blank");return "Opening "+m[1]+". This needs an internet connection."}}
+  if(m=/^(?:search|google)(?: for)? (.+)$/.exec(n)){window.open("https://www.google.com/search?q="+encodeURIComponent(m[1]),"_blank");return "Searching for “"+m[1]+"”."}
+  if(m=/^play (.+)$/.exec(n)){window.open("https://www.youtube.com/results?search_query="+encodeURIComponent(m[1]),"_blank");return "Looking up “"+m[1]+"” on YouTube."}
+  if(m=/^ai local ?(\S+)?$/.exec(n)){D.ai.provider="local";D.ai.on=true;if(m[1])D.ai.model=m[1];else if(/gemini/.test(D.ai.model))D.ai.model="llama3.2";save();return "Local AI (Ollama) enabled with “"+D.ai.model+"”."}
+  if(m=/^ai model (\S+)$/.exec(n)){D.ai.model=m[1];save();return "AI model set to “"+D.ai.model+"”."}
+  if(n==="ai on"){if(D.ai.provider==="gemini"&&!D.ai.key)return "Tap the AI key button and paste your Gemini key first.";D.ai.on=true;save();return "AI enabled ("+(D.ai.provider==="gemini"?"Gemini":"local")+", “"+D.ai.model+"”)."}
+  if(n==="ai off"){D.ai.on=false;save();return "AI disabled. I’ll use my own rules only."}
+  if(n==="ai status")return "AI is "+(D.ai.on?"on":"off")+". Provider: "+(D.ai.provider==="gemini"?"Gemini":"local Ollama")+". Model: "+D.ai.model+". Key saved: "+(D.ai.key?"yes":"no")+"."
+  if(m=/^(?:convert )?(\d+(?:\.\d+)?) ?(\w+) (?:to|in) (\w+)$/.exec(n)){var cv=conv(m);if(cv)return cv}
+  if(/battery|power level/.test(n)&&navigator.getBattery)return navigator.getBattery().then(function(b){return "Battery is at "+Math.round(b.level*100)+"%"+(b.charging?" and charging.":".")});
+  if(/system status|status report|diagnostic/.test(n)){
+    var cores=navigator.hardwareConcurrency||"?",mem=navigator.deviceMemory?navigator.deviceMemory+" GB":"unknown";
+    return "All systems are running, "+sir()+".\n• Network: "+(navigator.onLine?"online":"offline")+"\n• Processor threads: "+cores+"\n• Memory: "+mem+"\n• Voice output: "+(window.speechSynthesis?"ready":"unavailable")+"\n• Local AI: "+(D.ai.on?(D.ai.provider==="gemini"?"Gemini ":"Local ")+D.ai.model:"off")+"\n• Reminders: "+D.rem.length+"\n• Notes: "+D.notes.length+", to-dos: "+D.todos.length+", taught answers: "+D.taught.length}
+  if(m=/^(?:calculate|calc|what is|whats|solve)\s+(.+)$/i.exec(l)){var c1=calc(m[1]);if(c1!==null)return "= "+c1}
+  var c=calc(l);if(c!==null)return "= "+c;
+  var best=null,bs=0;D.taught.forEach(function(x){var s=sim(n,x[0]);if(s>bs){bs=s;best=x}});
+  if(best&&bs>=.6)return best[1];
+  if(/^(hi|hello|hey|hii|yo|good (morning|afternoon|evening))\b/.test(n)){var h=new Date().getHours();return (h<12?"Good morning":h<18?"Good afternoon":"Good evening")+", "+sir()+". How may I assist?"}
+  if(/how are you/.test(n))return "All systems nominal, "+sir()+". And you?";
+  if(/\btime\b/.test(n))return "It is "+new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})+", "+sir()+".";
+  if(/\b(date|day|today)\b/.test(n))return "Today is "+new Date().toLocaleDateString([],{weekday:"long",year:"numeric",month:"long",day:"numeric"})+".";
+  if(/joke|funny/.test(n))return pick(jokes);
+  if(/coin|flip/.test(n))return pick(["Heads","Tails"])+".";
+  if(/dice|roll/.test(n))return "You rolled a "+(1+Math.floor(Math.random()*6))+".";
+  if(/thank/.test(n))return "Always a pleasure, "+sir()+".";
+  if(/^(bye|goodbye|see you|good night)/.test(n))return "Goodbye, "+sir()+". Everything is saved.";
+  if(/who are you|your name/.test(n))return "I am "+D.wake.charAt(0).toUpperCase()+D.wake.slice(1)+", your personal assistant. I run entirely inside this file.";
+  if(D.ai.on)return ask();
+  if(best&&bs>=.35)return best[1];
+  return "I don’t know that yet, "+sir()+". Teach me with:\nteach: "+t.replace(/^\//,"")+" => your answer\nOr turn on the local AI with: ai on";
+}
+function setKey(k){D.ai.key=k.trim();if(window.JarvisNative){try{JarvisNative.setGeminiKey(D.ai.key)}catch(e){}}D.ai.provider="gemini";D.ai.on=true;if(!/gemini/.test(D.ai.model))D.ai.model="gemini-flash-latest";save()}
+function send(text){
+  var km=/^\/?ai key\s+(\S+)$/i.exec(text.trim());
+  if(km){setKey(km[1]);add("me","ai key ••••••••");add("bot","Gemini key saved on this device. AI is on with “"+D.ai.model+"”. Ask me anything.");return}
+  add("me",text);
+  Promise.resolve(reply(text)).then(function(r){setTimeout(function(){add("bot",r)},150)});
+}
+$("f").addEventListener("submit",function(e){e.preventDefault();var v=inp.value.trim();if(!v)return;inp.value="";send(v)});
+
+/* Voice input and wake word */
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+function heard(t){
+  if(speaking)return;var l=t.toLowerCase(),w=D.wake.toLowerCase(),i=l.indexOf(w);
+  if(i>-1){var c=t.slice(i+w.length).replace(/^[\s,.:!]+/,"");awake=Date.now()+8000;if(!c){add("bot","Yes, "+sir()+"?");return}send(c)}
+  else if(Date.now()<awake){send(t)}
+}
+function listen(onText,cont){
+  var r=new SR();r.lang=navigator.language||"en-US";r.continuous=cont;
+  r.onresult=function(e){onText(e.results[e.results.length-1][0].transcript.trim())};
+  r.onstart=function(){orb.classList.add("listen");$("st").textContent=cont?"Listening for “"+D.wake+"”…":"Listening…"};
+  r.onend=function(){orb.classList.remove("listen");$("st").textContent="Online. Everything is stored on this device.";if(cont&&hf)try{r.start()}catch(e){}};
+  r.onerror=function(ev){if(/not-allowed|service-not-allowed/.test(ev.error)){hf=false;$("bHF").classList.remove("on");add("bot","Microphone access was blocked. Allow it in the browser address bar, or type instead.",false)}else if(ev.error==="network"){hf=false;$("bHF").classList.remove("on");add("bot","This browser’s speech recognition needs internet. Typing and voice replies still work offline.",false)}};
+  r.start();return r;
+}
+if(SR){
+  $("bMic").hidden=false;
+  $("bMic").onclick=function(){listen(function(t){inp.value=t;$("f").requestSubmit()},false)};
+  $("bHF").onclick=function(){
+    hf=!hf;$("bHF").classList.toggle("on",hf);
+    if(hf){rec=listen(heard,true);add("bot","Hands-free is on. Say “"+D.wake+"” and then your command.",false)}
+    else if(rec){rec.stop()}
+  };
+}else{$("bHF").hidden=true}
+
+/* Backup */
+function backup(){
+  var b=new Blob([JSON.stringify({app:"jarvis",saved:new Date().toISOString(),data:(function(){var c=JSON.parse(JSON.stringify(D));c.ai.key="";return c})()},null,2)],{type:"application/json"});
+  var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="jarvis-backup-"+new Date().toISOString().slice(0,10)+".json";
+  document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(a.href)},1000);
+}
+function load(d){if(!d||!Array.isArray(d.chat))throw 0;var old=D.ai;Object.assign(D,{name:"",chat:[],notes:[],todos:[],taught:[],rem:[]},d);D.ai=Object.assign({on:false,provider:"local",model:"llama3.2"},D.ai||old,{key:(old&&old.key)||""});save();D.rem.forEach(arm);render()}
+$("bBackup").onclick=function(){backup();add("bot","Backup file downloaded. Keep it somewhere safe.",false)};
+$("bRestore").onclick=function(){$("file").click()};
+$("file").onchange=function(e){var f=e.target.files[0];if(!f)return;var r=new FileReader();
+  r.onload=function(){try{var j=JSON.parse(r.result);load(j.data||j);add("bot","Backup restored: "+D.notes.length+" notes, "+D.todos.length+" to-dos, "+D.taught.length+" taught answers.",false)}catch(x){add("bot","That file isn’t a valid backup.",false)}};
+  r.readAsText(f);e.target.value=""};
+if(window.JarvisNative||/; wv\)/.test(navigator.userAgent)){["bInstall","bDl","bApk"].forEach(function(i){$(i).hidden=true})}
+$("bAI").onclick=function(){var k=prompt("Paste your Gemini API key. It stays only on this device.");if(k&&k.trim())send("ai key "+k.trim())};
+$("bSnap").onclick=function(){try{var s=JSON.parse(localStorage.getItem(SNAP));if(!s)return add("bot","No automatic snapshot yet. One is saved every 15 messages.",false);if(confirm("Restore the snapshot from "+new Date(s.t).toLocaleString()+"? This replaces current data."))load(s.d)}catch(e){add("bot","Snapshot couldn’t be read.",false)}};
+$("bVoice").onclick=function(){D.voice=!D.voice;if(!D.voice&&window.speechSynthesis)speechSynthesis.cancel();save();$("bVoice").classList.toggle("on",D.voice)};
+
+
+/* Install and download */
+var dp=null,standalone=window.matchMedia("(display-mode: standalone)").matches||navigator.standalone;
+var iOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
+if(standalone){$("bInstall").hidden=true}
+window.addEventListener("beforeinstallprompt",function(e){e.preventDefault();dp=e;$("bInstall").textContent="Install app"});
+window.addEventListener("appinstalled",function(){$("bInstall").hidden=true;add("bot","Installed. You can open me from your home screen now.",false)});
+$("bInstall").onclick=function(){
+  if(dp){dp.prompt();dp.userChoice.then(function(){dp=null});return}
+  if(iOS){add("bot","On iPhone or iPad: open this page in Safari, tap the Share button, then “Add to Home Screen”.",false);return}
+  if(location.protocol==="file:"){add("bot","You opened this as a file, so installing isn’t possible. Open the https link of the hosted page (your github.io address) in Chrome, then tap this button again.",false);return}
+  add("bot","Open the browser menu (three dots) and choose “Install app” or “Add to Home screen”. If you don’t see it, wait ten seconds for the page to finish loading, reload once, and try again.",false);
+};
+$("bApk").onclick=function(){
+  var m=/^([^.]+)\.github\.io$/.exec(location.hostname),r=location.pathname.split("/")[1];
+  if(m&&r)window.open("https://github.com/"+m[1]+"/"+r+"/releases/latest","_blank");
+  else add("bot","Open this app from your github.io link, then I can take you to the Android download.",false)};
+$("bDl").onclick=function(){
+  function out(t){var b=new Blob([t],{type:"text/html"}),a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="jarvis.html";document.body.appendChild(a);a.click();a.remove();setTimeout(function(){URL.revokeObjectURL(a.href)},1000);add("bot","App file downloaded as jarvis.html. Open it in Chrome or Edge on a computer. On a phone, use Install app instead.",false)}
+  fetch(location.href).then(function(r){return r.text()}).then(out).catch(function(){out("<!DOCTYPE html>\n"+document.documentElement.outerHTML)});
+};
+
+["What can you do?","System status","Battery","Tell me a joke","reminders"].forEach(function(c){var b=document.createElement("button");b.type="button";b.textContent=c;b.onclick=function(){send(c)};$("chips").appendChild(b)});
+
+function render(){
+  log.innerHTML="";D.chat.forEach(function(x){var d=document.createElement("div");d.className="m "+x[0];d.textContent=x[1];log.appendChild(d)});
+  $("title").textContent=D.wake.toUpperCase();$("bVoice").classList.toggle("on",D.voice);
+  if(!D.chat.length){var g="Online and ready, "+sir()+". Type help to see what I can do.";var d=document.createElement("div");d.className="m bot";d.textContent=g;log.appendChild(d)}
+  log.scrollTop=log.scrollHeight;
+}
+D.rem.forEach(arm);render();
+if("serviceWorker" in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){})})}
+})();
+</script>
+</body>
+</html>
